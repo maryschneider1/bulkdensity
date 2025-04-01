@@ -1,0 +1,180 @@
+rm(list=ls(all=TRUE))
+cat("\014")
+#
+
+############ Installs Packages ##############
+
+list.of.packages <- c("tidyverse", "vegan", "agricolae", "tables", "plotrix", "ggpubr", "rstatix", "multcompView", "emmeans", "multcomp")
+new.packages <- list.of.packages[!(list.of.packages %in% 
+                                     installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# Read in data
+data = read.csv("burn_data.csv")
+data$Species = as.character(data$Species)
+data$mass_lost_g = as.numeric(data$mass_lost_g)
+data$bed_height_cm = as.numeric(data$bed_height_cm)
+data$Species = factor(data$Species)
+
+#check assumptions#
+model <- lm(mass_lost_g ~ bed_height_cm + Species, data = data)
+#Inspect model diagnostic metrics#
+model.metrics <- augment(model)
+head(model.metrics, 3)
+
+#create a QQ plot#
+
+ggqqplot(residuals(model))
+
+#compute Shapiro-Wilk test of normality
+shapiro_test(residuals(model))
+plot(model, 1)
+
+model.metrics %>% levene_test(.resid ~ Species)
+plot(model, 1)
+
+#Outliers
+model.metrics %>% 
+  filter(abs(.std.resid) > 3) %>%
+  as.data.frame()
+
+# Outlier Detection and Severity Analysis
+outliers <- model.metrics %>% 
+  filter(abs(.std.resid) > 3) %>% 
+  mutate(severity = abs(.std.resid)) %>% 
+  arrange(desc(severity))
+
+print(outliers)
+# test for significance #
+
+library(dplyr)
+data_clean <- data %>% filter(!is.na(bed_height_cm), !is.na(mass_lost_g))
+
+table(data_clean$Species)  # Ensure enough observations per group
+summary(data_clean$bed_height_cm)  # Check for NAs or outliers
+
+model <- lm(mass_lost_g ~ Species + bed_height_cm, data = data_clean)
+emmeans(model, ~ Species | bed_height_cm) # check if this works
+
+anova_ = data_clean %>% anova_test(mass_lost_g ~ bed_height_cm + Species) %>%
+  add_significance()
+anova_
+
+
+pwc <- data_clean %>% 
+  emmeans_test(
+    mass_lost_g ~ Species, covariate = bed_height_cm,
+    p.adjust.method = "bonferroni"
+  )
+pwc
+
+MEANS = get_emmeans(pwc)
+
+# Visualization: line plots with p-values
+
+pwc <- pwc %>% add_xy_position(x = "Species", fun = "mean_se")
+ggline(get_emmeans(pwc), x = "Species", y = "emmean") + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) + 
+  stat_pvalue_manual(pwc, hide.ns = TRUE, tip.length = FALSE) + 
+  labs(
+    subtitle = get_test_label(anova_, detailed = TRUE),
+    caption = get_pwc_label(pwc)
+  )
+
+# Fit the ANOVA model #
+
+anova <- aov(mass_lost_g ~ bed_height_cm + Species, data = data)
+
+#Perform post-hoc tests on the Species factor
+posthoc_results <- emmeans(anova, pairwise ~ Species)
+
+
+# Extract pairwise comparisons and p-values
+pairwise_comparisons <- as.data.frame(posthoc_results$contrasts)
+
+# Filter for significant comparisons based on p-value threshold (e.g., p < 0.05)
+pairwise_comparisons <- pairwise_comparisons %>%
+  mutate(significance = ifelse(p.value < 0.05, "*", "ns"))
+
+# Merge with the original data for visualization
+pairwise_comparisons$Species <- rownames(pairwise_comparisons)
+fuel_data <- merge(data, pairwise_comparisons, by = "Species", all.x = TRUE)
+
+# Visualization: Boxplot with significance labels
+cbbPalette <- c("#56B4E9",  # Light Blue
+                "#0072B2",  # Dark Blue
+                "#F8766D",  # Light Red
+                "#BE0032",  # Dark Red
+                "#00BA38",  # Light Green
+                "#009E73",  # Dark Green
+                "#F0E442",  # Light Yellow
+                "#B79F00" )  # Teal )
+
+### boxplot##
+
+# Convert 'Species' in pairwise_comparisons to factor with the correct levels
+fuel_data$Species <- factor(fuel_data$Species, levels = c(
+  "Q_geminata", "Exp. Q. geminata", 
+  "Q_laurifolia", "Exp. Q. laurifolia", 
+  "Q_laevis", "Exp. Q. laevis", 
+  "Q_falcata", "Exp. Q. falcata"
+))
+
+pairwise_comparisons$Species <- factor(pairwise_comparisons$Species, 
+                                       levels = levels(fuel_data$Species))
+
+
+# Check the structure and levels of Species
+str(pairwise_comparisons)
+
+# Calculate the max y-value for positioning the annotations
+max_y <- max(fuel_data$mass_lost_g, na.rm = TRUE)
+y_offset <- max_y * 1.2  # Increase the offset to ensure the text is positioned above the boxplot
+
+
+# Create the boxplot
+box_plot <- ggplot(fuel_data, aes(x = Species, y = mass_lost_g, fill = Species)) +
+  geom_boxplot() +
+  # Annotate with significance comparisons
+  geom_text(data = pairwise_comparisons, aes(x = Species, label = significance, y = y_offset), size = 5) +  # Reduce the text size if needed
+  geom_point(shape = 16, show.legend = FALSE, size = 2) +
+  labs(subtitle = get_test_label(anova_, detailed = TRUE)) +
+  theme_classic() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", colour = "black"),
+    text = element_text(size = 11),
+    axis.title.x = element_text(size = 11, face = "bold", colour = "black"),
+    axis.title.y = element_text(size = 11, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 11, face = "italic", color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 11, face = "bold", color = "black"),
+    strip.text = element_text(color = "black", size = 11, face = "bold"),
+    plot.subtitle = element_text(size = 11),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = cbbPalette) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Mass lost (g)")
+
+print(box_plot)
+
+# Save the box plot
+ggsave("Figures/Box_MassLost.png", plot = box_plot, width = 10, height = 7)
+
+
+posthoc_results <- emmeans(model, pairwise ~ Species)
+
+# Extract estimated marginal means (EMMs)
+emm_df <- as.data.frame(posthoc_results$emmeans)
+
+# Print the results
+print(emm_df)
+
+# Save the EMMs to a CSV
+write.csv(emm_df, "Figures/MassLost.csv", row.names = FALSE)
+
